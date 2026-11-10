@@ -17,3 +17,4 @@ vs2022/*
 vsxmake*/
 *.pyc
 **/src/config/CETVersion.h
+.build-staging/
