@@ -1,0 +1,3 @@
+[submodule "RED4ext.SDK"]
+	path = ThemedCET/vendor/RED4ext.SDK
+	url = https://github.com/maximegmd/RED4ext.SDK
