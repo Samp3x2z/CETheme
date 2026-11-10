@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <limits>
+#include <string_view>
 
 
 namespace
@@ -23,7 +24,14 @@ bool ThemeReadFloat(const nlohmann::json& aValues, const char* acName, float& aO
 
     const auto value = it->get<double>();
     const auto converted = static_cast<float>(value);
-    if (!std::isfinite(value) || !std::isfinite(converted))
+    if (!std::isfinite(value) || !std::isfinite(converted) || std::abs(value) > 10000.0)
+        return false;
+    const std::string_view name{acName};
+    if ((name == "Alpha" || name == "DisabledAlpha") && (value < 0.0 || value > 1.0))
+        return false;
+    if ((name.find("Rounding") != std::string_view::npos || name.find("BorderSize") != std::string_view::npos) && value < 0.0)
+        return false;
+    if ((name == "CurveTessellationTol" || name == "CircleTessellationMaxError") && value <= 0.0)
         return false;
 
     aOut = converted;
@@ -33,7 +41,7 @@ bool ThemeReadFloat(const nlohmann::json& aValues, const char* acName, float& aO
 bool ThemeReadVec2(const nlohmann::json& aValues, const char* acName, ImVec2& aOut)
 {
     const auto it = aValues.find(acName);
-    if (it == aValues.end() || !it->is_array() || it->size() < 2 ||
+    if (it == aValues.end() || !it->is_array() || it->size() != 2 ||
         !(*it)[0].is_number() || !(*it)[1].is_number())
         return false;
 
@@ -41,7 +49,7 @@ bool ThemeReadVec2(const nlohmann::json& aValues, const char* acName, ImVec2& aO
     const auto y = (*it)[1].get<double>();
     const auto fx = static_cast<float>(x);
     const auto fy = static_cast<float>(y);
-    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(fx) || !std::isfinite(fy))
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(fx) || !std::isfinite(fy) || std::abs(x) > 10000.0 || std::abs(y) > 10000.0)
         return false;
 
     aOut = ImVec2(fx, fy);
@@ -64,8 +72,11 @@ bool ThemeReadInt(const nlohmann::json& aValues, const char* acName, int& aOut)
     if (it == aValues.end() || !it->is_number_integer())
         return false;
 
-    const auto value = it->get<int64_t>();
-    if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max())
+    const auto value = it->get<long double>();
+    if (!std::isfinite(value) || value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max())
+        return false;
+    const std::string_view name{acName};
+    if ((name == "WindowMenuButtonPosition" || name == "ColorButtonPosition") && (value < -1 || value > 1))
         return false;
 
     aOut = static_cast<int>(value);
@@ -448,7 +459,6 @@ void D3D12::ReloadFonts()
 {
     std::lock_guard _(m_imguiLock);
 
-    // TODO - scale also by DPI
     const auto [resx, resy] = m_outSize;
     const auto scaleFromReference = std::min(static_cast<float>(resx) / 1920.0f, static_cast<float>(resy) / 1080.0f);
 
@@ -457,133 +467,106 @@ void D3D12::ReloadFonts()
 
     ImFontConfig config;
     const auto& fontSettings = m_options.Font;
-    config.SizePixels = std::floorf(fontSettings.BaseSize * scaleFromReference);
-    config.OversampleH = fontSettings.OversampleHorizontal;
-    config.OversampleV = fontSettings.OversampleVertical;
-    if (config.OversampleH == 1 && config.OversampleV == 1)
-        config.PixelSnapH = true;
+    config.SizePixels = std::max(1.0f, std::floorf(fontSettings.BaseSize * scaleFromReference));
+    config.OversampleH = std::max(1, fontSettings.OversampleHorizontal);
+    config.OversampleV = std::max(1, fontSettings.OversampleVertical);
+    config.PixelSnapH = config.OversampleH == 1 && config.OversampleV == 1;
     config.MergeMode = false;
 
-    // add default font
-    const auto customFontPath = fontSettings.Path.empty() ? std::filesystem::path{} : GetAbsolutePath(UTF8ToUTF16(fontSettings.Path), m_paths.Fonts(), false);
-    auto cetFontPath = GetAbsolutePath(L"Rajdhani-SemiBold.ttf", m_paths.Fonts(), false);
-    const auto* cpGlyphRanges = io.Fonts->GetGlyphRangesDefault();
-    if (customFontPath.empty())
+    const auto customFontPath = fontSettings.Path.empty()
+        ? std::filesystem::path{}
+        : GetAbsolutePath(UTF8ToUTF16(fontSettings.Path), m_paths.Fonts(), false);
+    auto primaryFontPath = customFontPath;
+    if (primaryFontPath.empty())
     {
         if (!fontSettings.Path.empty())
-            Log::Warn("D3D12::ReloadFonts() - Custom font path is invalid! Using default CET font.");
-
-        if (cetFontPath.empty())
-        {
-            Log::Warn("D3D12::ReloadFonts() - Missing default fonts!");
-            io.Fonts->AddFontDefault(&config);
-        }
-        else
-            io.Fonts->AddFontFromFileTTF(UTF16ToUTF8(cetFontPath.native()).c_str(), config.SizePixels, &config, cpGlyphRanges);
+            Log::Warn("D3D12::ReloadFonts() - Custom font '{}' is invalid; using bundled Noto Sans.", fontSettings.Path);
+        primaryFontPath = GetAbsolutePath(L"NotoSans-Regular.ttf", m_paths.Fonts(), false);
     }
-    else
-        io.Fonts->AddFontFromFileTTF(UTF16ToUTF8(customFontPath.native()).c_str(), config.SizePixels, &config, cpGlyphRanges);
+
+    const ImWchar* primaryGlyphRanges = io.Fonts->GetGlyphRangesDefault();
+    bool primaryLoaded = false;
+    if (!primaryFontPath.empty())
+        primaryLoaded = io.Fonts->AddFontFromFileTTF(UTF16ToUTF8(primaryFontPath.native()).c_str(), config.SizePixels, &config, primaryGlyphRanges) != nullptr;
+    if (!primaryLoaded)
+    {
+        Log::Warn("D3D12::ReloadFonts() - Could not load bundled/default font; using Dear ImGui fallback.");
+        io.Fonts->AddFontDefault(&config);
+    }
+
+    std::filesystem::path languageFontPath;
+    const ImWchar* languageGlyphRanges = nullptr;
+    const auto setLanguageFont = [&](const wchar_t* aFileName, const ImWchar* apRanges)
+    {
+        languageFontPath = GetAbsolutePath(aFileName, m_paths.Fonts(), false);
+        languageGlyphRanges = apRanges;
+    };
 
     if (fontSettings.Language == "ChineseFull")
-    {
-        cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSansTC-Regular.otf", m_paths.Fonts(), false);
-        cpGlyphRanges = io.Fonts->GetGlyphRangesChineseFull();
-    }
+        setLanguageFont(L"NotoSansTC-Regular.otf", io.Fonts->GetGlyphRangesChineseFull());
     else if (fontSettings.Language == "ChineseSimplifiedCommon")
-    {
-        cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSansSC-Regular.otf", m_paths.Fonts(), false);
-        cpGlyphRanges = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
-    }
+        setLanguageFont(L"NotoSansSC-Regular.otf", io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
     else if (fontSettings.Language == "Japanese")
-    {
-        cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSansJP-Regular.otf", m_paths.Fonts(), false);
-        cpGlyphRanges = io.Fonts->GetGlyphRangesJapanese();
-    }
+        setLanguageFont(L"NotoSansJP-Regular.otf", io.Fonts->GetGlyphRangesJapanese());
     else if (fontSettings.Language == "Korean")
-    {
-        cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSansKR-Regular.otf", m_paths.Fonts(), false);
-        cpGlyphRanges = io.Fonts->GetGlyphRangesKorean();
-    }
+        setLanguageFont(L"NotoSansKR-Regular.otf", io.Fonts->GetGlyphRangesKorean());
     else if (fontSettings.Language == "Cyrillic")
-    {
-        cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSans-Regular.ttf", m_paths.Fonts(), false);
-        cpGlyphRanges = io.Fonts->GetGlyphRangesCyrillic();
-    }
+        setLanguageFont(L"NotoSans-Regular.ttf", io.Fonts->GetGlyphRangesCyrillic());
     else if (fontSettings.Language == "Thai")
-    {
-        cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSansThai-Regular.ttf", m_paths.Fonts(), false);
-        cpGlyphRanges = io.Fonts->GetGlyphRangesThai();
-    }
+        setLanguageFont(L"NotoSansThai-Regular.ttf", io.Fonts->GetGlyphRangesThai());
     else if (fontSettings.Language == "Vietnamese")
-    {
-        cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSans-Regular.ttf", m_paths.Fonts(), false);
-        cpGlyphRanges = io.Fonts->GetGlyphRangesVietnamese();
-    }
-    else
+        setLanguageFont(L"NotoSans-Regular.ttf", io.Fonts->GetGlyphRangesVietnamese());
+    else if (fontSettings.Language == "Default")
     {
         switch (GetSystemDefaultLangID())
         {
         case MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL):
-            cetFontPath = GetAbsolutePath(L"NotoSansTC-Regular.otf", m_paths.Fonts(), false);
-            cpGlyphRanges = io.Fonts->GetGlyphRangesChineseFull();
+            setLanguageFont(L"NotoSansTC-Regular.otf", io.Fonts->GetGlyphRangesChineseFull());
             break;
-
         case MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED):
-            cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSansSC-Regular.otf", m_paths.Fonts(), false);
-            cpGlyphRanges = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
+            setLanguageFont(L"NotoSansSC-Regular.otf", io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
             break;
-
         case MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT):
-            cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSansJP-Regular.otf", m_paths.Fonts(), false);
-            cpGlyphRanges = io.Fonts->GetGlyphRangesJapanese();
+            setLanguageFont(L"NotoSansJP-Regular.otf", io.Fonts->GetGlyphRangesJapanese());
             break;
-
         case MAKELANGID(LANG_KOREAN, SUBLANG_DEFAULT):
-            cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSansKR-Regular.otf", m_paths.Fonts(), false);
-            cpGlyphRanges = io.Fonts->GetGlyphRangesKorean();
+            setLanguageFont(L"NotoSansKR-Regular.otf", io.Fonts->GetGlyphRangesKorean());
             break;
-
         case MAKELANGID(LANG_BELARUSIAN, SUBLANG_DEFAULT):
         case MAKELANGID(LANG_RUSSIAN, SUBLANG_DEFAULT):
-            cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSans-Regular.ttf", m_paths.Fonts(), false);
-            cpGlyphRanges = io.Fonts->GetGlyphRangesCyrillic();
+            setLanguageFont(L"NotoSans-Regular.ttf", io.Fonts->GetGlyphRangesCyrillic());
             break;
-
         case MAKELANGID(LANG_THAI, SUBLANG_DEFAULT):
-            cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSansThai-Regular.ttf", m_paths.Fonts(), false);
-            cpGlyphRanges = io.Fonts->GetGlyphRangesThai();
+            setLanguageFont(L"NotoSansThai-Regular.ttf", io.Fonts->GetGlyphRangesThai());
             break;
-
         case MAKELANGID(LANG_VIETNAMESE, SUBLANG_DEFAULT):
-            cetFontPath = GetAbsolutePath(m_paths.Fonts() / L"NotoSans-Regular.ttf", m_paths.Fonts(), false);
-            cpGlyphRanges = io.Fonts->GetGlyphRangesVietnamese();
+            setLanguageFont(L"NotoSans-Regular.ttf", io.Fonts->GetGlyphRangesVietnamese());
+            break;
+        default:
             break;
         }
     }
 
-    // add extra glyphs from language font
-    config.MergeMode = true;
-    if (customFontPath.empty())
+    // Merge only language-specific glyphs; never reload the chosen custom font as its own fallback.
+    if (languageGlyphRanges != nullptr && !languageFontPath.empty())
     {
-        if (!fontSettings.Path.empty())
-            Log::Warn("D3D12::ReloadFonts() - Custom font path is invalid! Using default CET font.");
+        config.MergeMode = true;
+        if (!io.Fonts->AddFontFromFileTTF(UTF16ToUTF8(languageFontPath.native()).c_str(), config.SizePixels, &config, languageGlyphRanges))
+            Log::Warn("D3D12::ReloadFonts() - Could not load language fallback font '{}'.", UTF16ToUTF8(languageFontPath.native()));
+    }
+    else if (languageGlyphRanges != nullptr)
+        Log::Warn("D3D12::ReloadFonts() - Language fallback font is missing; some glyphs may not be available.");
 
-        if (cetFontPath.empty())
-        {
-            Log::Warn("D3D12::ReloadFonts() - Missing fonts for extra language glyphs!");
-            io.Fonts->AddFontDefault(&config);
-        }
-        else
-            io.Fonts->AddFontFromFileTTF(UTF16ToUTF8(cetFontPath.native()).c_str(), config.SizePixels, &config, cpGlyphRanges);
+    const auto iconPath = GetAbsolutePath(L"materialdesignicons.ttf", m_paths.Fonts(), false);
+    if (!iconPath.empty())
+    {
+        config.MergeMode = true;
+        config.GlyphMinAdvanceX = config.SizePixels;
+        static const ImWchar iconRanges[] = {ICON_MIN_MD, ICON_MAX_MD, 0};
+        io.Fonts->AddFontFromFileTTF(UTF16ToUTF8(iconPath.native()).c_str(), config.SizePixels, &config, iconRanges);
     }
     else
-        io.Fonts->AddFontFromFileTTF(UTF16ToUTF8(customFontPath.native()).c_str(), config.SizePixels, &config, cpGlyphRanges);
-
-    // add icons from fontawesome4
-    config.GlyphMinAdvanceX = config.SizePixels;
-    static const ImWchar icon_ranges[] = {ICON_MIN_MD, ICON_MAX_MD, 0};
-    auto cetIconPath = GetAbsolutePath(L"materialdesignicons.ttf", m_paths.Fonts(), false);
-    io.Fonts->AddFontFromFileTTF(UTF16ToUTF8(cetIconPath.native()).c_str(), config.SizePixels, &config, icon_ranges);
+        Log::Warn("D3D12::ReloadFonts() - Material Design Icons font is missing.");
 }
 
 
@@ -594,7 +577,14 @@ void D3D12::ReloadTheme(const bool aForce)
 
     std::lock_guard _(m_imguiLock);
 
-    const auto themeName = m_options.Theme.Name.empty() ? std::string("Dark.json") : m_options.Theme.Name;
+    auto themeName = m_options.Theme.Name.empty() ? std::string("Dark.json") : m_options.Theme.Name;
+    const std::filesystem::path requestedThemeFile = UTF8ToUTF16(themeName);
+    if (requestedThemeFile.filename() != requestedThemeFile || requestedThemeFile.extension() != L".json")
+    {
+        Log::Warn("D3D12::ReloadTheme() - Refusing invalid theme filename '{}'; using Dark.json.", themeName);
+        themeName = "Dark.json";
+        m_options.Theme.Name = themeName;
+    }
     if (!aForce && themeName == m_activeTheme)
         return;
 
@@ -685,17 +675,34 @@ bool D3D12::SaveTheme(const std::string& aThemeName)
         savedStyle[it.key()] = it.value();
     theme["style"] = std::move(savedStyle);
 
-    std::ofstream output(themePath, std::ios::trunc);
-    if (!output)
+    auto temporaryPath = themePath;
+    temporaryPath += L".tmp";
     {
-        Log::Error("D3D12::SaveTheme() - Could not write theme '{}'.", aThemeName);
-        return false;
+        std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
+        if (!output)
+        {
+            Log::Error("D3D12::SaveTheme() - Could not create temporary theme file '{}'.", aThemeName);
+            return false;
+        }
+
+        output << theme.dump(4) << '\n';
+        output.flush();
+        if (!output.good())
+        {
+            output.close();
+            std::error_code removeError;
+            std::filesystem::remove(temporaryPath, removeError);
+            Log::Error("D3D12::SaveTheme() - Failed while writing temporary theme '{}'.", aThemeName);
+            return false;
+        }
     }
 
-    output << theme.dump(4) << std::endl;
-    if (!output.good())
+    if (!MoveFileExW(temporaryPath.c_str(), themePath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
     {
-        Log::Error("D3D12::SaveTheme() - Failed while writing theme '{}'.", aThemeName);
+        const auto error = GetLastError();
+        std::error_code removeError;
+        std::filesystem::remove(temporaryPath, removeError);
+        Log::Error("D3D12::SaveTheme() - Could not atomically replace '{}'; Windows error {}.", aThemeName, error);
         return false;
     }
 
@@ -759,7 +766,8 @@ void D3D12::PrepareUpdate()
 
     std::lock_guard _(m_imguiLock);
 
-    ReloadTheme();
+    if (m_themeReloadRequested.exchange(false, std::memory_order_acq_rel))
+        ReloadTheme();
     ImGui_ImplWin32_NewFrame(m_outSize);
     ImGui::NewFrame();
 

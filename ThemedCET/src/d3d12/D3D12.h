@@ -16,6 +16,7 @@ struct D3D12
 
     void ReloadFonts();
     void ReloadTheme(const bool aForce = false);
+    void RequestThemeReload() noexcept { m_themeReloadRequested.store(true, std::memory_order_release); }
     bool SaveTheme(const std::string& aThemeName);
 
     void SetTrapInputInImGui(const bool acEnabled);
@@ -75,6 +76,7 @@ private:
     std::atomic_bool m_trapInputInImGui{false};
     ImGuiStyle m_styleReference{};
     std::string m_activeTheme{};
+    std::atomic_bool m_themeReloadRequested{false};
 
     Paths& m_paths;
     Window& m_window;

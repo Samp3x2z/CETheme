@@ -22,11 +22,15 @@ protected:
 
 private:
     void UpdateAndDrawSetting(const std::string& acLabel, const std::string& acTooltip, bool& aCurrent, const bool& acSaved);
+    void RefreshInterfaceFileLists();
 
     PatchesSettings m_patches;
     DeveloperSettings m_developer;
     std::string m_theme;
     std::string m_font;
+    std::vector<std::string> m_themes;
+    std::vector<std::string> m_fonts;
+    bool m_interfaceListsLoaded{false};
 
     Options& m_options;
     LuaVM& m_vm;

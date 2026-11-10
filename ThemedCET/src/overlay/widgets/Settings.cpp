@@ -112,20 +112,16 @@ void Settings::OnUpdate()
         if (ImGui::CollapsingHeader("Interface", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::TreePush("##INTERFACE");
-            std::vector<std::string> themes;
-            const auto& themesPath = CET::Get().GetPaths().Themes();
-            std::error_code ec;
-            for (const auto& entry : std::filesystem::directory_iterator(themesPath, ec))
-                if (entry.is_regular_file() && entry.path().extension() == ".json") themes.push_back(entry.path().filename().string());
-            std::sort(themes.begin(), themes.end());
-            if (themes.empty()) ImGui::TextDisabled("No .json themes found.");
+            if (!m_interfaceListsLoaded) RefreshInterfaceFileLists();
+            if (ImGui::SmallButton("Refresh theme/font lists")) RefreshInterfaceFileLists();
+            if (m_themes.empty()) ImGui::TextDisabled("No .json themes found.");
             else
             {
-                if (std::find(themes.begin(), themes.end(), m_theme) == themes.end())
+                if (std::find(m_themes.begin(), m_themes.end(), m_theme) == m_themes.end())
                 {
                     // Prefer Dark.json as the safe default.
-                    const auto darkTheme = std::find(themes.begin(), themes.end(), "Dark.json");
-                    m_theme = darkTheme != themes.end() ? *darkTheme : themes.front();
+                    const auto darkTheme = std::find(m_themes.begin(), m_themes.end(), "Dark.json");
+                    m_theme = darkTheme != m_themes.end() ? *darkTheme : m_themes.front();
                 }
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextUnformatted("Theme preset :");
@@ -133,7 +129,7 @@ void Settings::OnUpdate()
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
                 if (ImGui::BeginCombo("##Theme preset", m_theme.c_str()))
                 {
-                    for (const auto& theme : themes)
+                    for (const auto& theme : m_themes)
                     {
                         const bool selected = theme == m_theme;
                         if (ImGui::Selectable(theme.c_str(), selected)) m_theme = theme;
@@ -142,18 +138,6 @@ void Settings::OnUpdate()
                     ImGui::EndCombo();
                 }
             }
-            std::vector<std::string> fonts;
-            const auto& fontsPath = CET::Get().GetPaths().Fonts();
-            ec.clear();
-            for (const auto& entry : std::filesystem::directory_iterator(fontsPath, ec))
-            {
-                if (!entry.is_regular_file()) continue;
-                auto ext = entry.path().extension().string();
-                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-                if (ext == ".ttf" || ext == ".otf") fonts.push_back(entry.path().filename().string());
-            }
-            std::sort(fonts.begin(), fonts.end());
-            fonts.insert(fonts.begin(), "Default (Noto Sans)");
             const std::string currentFont = m_font.empty() ? "Default (Noto Sans)" : m_font;
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted("Font :");
@@ -161,7 +145,7 @@ void Settings::OnUpdate()
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
             if (ImGui::BeginCombo("##Font", currentFont.c_str()))
             {
-                for (const auto& font : fonts)
+                for (const auto& font : m_fonts)
                 {
                     const bool selected = font == currentFont;
                     if (ImGui::Selectable(font.c_str(), selected)) m_font = font == "Default (Noto Sans)" ? "" : font;
@@ -189,6 +173,37 @@ void Settings::OnUpdate()
         ResetToDefaults();
 }
 
+void Settings::RefreshInterfaceFileLists()
+{
+    m_themes.clear();
+    m_fonts.clear();
+
+    std::error_code ec;
+    const auto& themesPath = CET::Get().GetPaths().Themes();
+    for (const auto& entry : std::filesystem::directory_iterator(themesPath, ec))
+    {
+        if (ec) break;
+        if (entry.is_regular_file() && entry.path().extension() == ".json")
+            m_themes.push_back(entry.path().filename().string());
+    }
+
+    ec.clear();
+    const auto& fontsPath = CET::Get().GetPaths().Fonts();
+    for (const auto& entry : std::filesystem::directory_iterator(fontsPath, ec))
+    {
+        if (ec) break;
+        if (!entry.is_regular_file()) continue;
+        auto extension = entry.path().extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (extension == ".ttf" || extension == ".otf") m_fonts.push_back(entry.path().filename().string());
+    }
+
+    std::sort(m_themes.begin(), m_themes.end());
+    std::sort(m_fonts.begin(), m_fonts.end());
+    m_fonts.insert(m_fonts.begin(), "Default (Noto Sans)");
+    m_interfaceListsLoaded = true;
+}
+
 void Settings::Load()
 {
     m_options.Load();
@@ -209,6 +224,7 @@ void Settings::Save() const
     m_options.Save();
 
     auto& d3d12 = CET::Get().GetD3D12();
+    d3d12.RequestThemeReload();
     if (!d3d12.SaveTheme(m_theme))
         Log::Warn("Settings::Save() - Could not write the selected theme JSON '{}'.", m_theme);
 }
